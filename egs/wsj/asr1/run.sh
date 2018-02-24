@@ -7,9 +7,9 @@
 . ./cmd.sh
 
 # general configuration
-backend=chainer
+backend=pytorch
 stage=0        # start from 0 if you need to start from data preparation
-gpu=-1         # use 0 when using GPU on slurm/grid engine, otherwise -1
+gpu=0         # use 0 when using GPU on slurm/grid engine, otherwise -1
 debugmode=1
 dumpdir=dump   # directory to dump full features
 N=0            # number of minibatches to be used (mainly for debugging). "0" uses all minibatches.
@@ -21,27 +21,27 @@ do_delta=false # true when using CNN
 
 # network archtecture
 # encoder related
-etype=vggblstmp     # encoder architecture type
-elayers=6
-eunits=320
-eprojs=320
+etype=blstmp #vggblstmp     # encoder architecture type
+elayers=4
+eunits=256 #320
+eprojs=256
 subsample=1_2_2_1_1 # skip every n frame from input to nth layers
 # loss related
 ctctype=chainer
 # decoder related
 dlayers=1
-dunits=300
+dunits=256
 # attention related
 atype=location
 aconv_chans=10
 aconv_filts=100
 
 # hybrid CTC/attention
-mtlalpha=0.5
+mtlalpha=0.0 #0.5
 
 # label smoothing
 lsm_type=unigram
-lsm_weight=0.05
+lsm_weight=0.0 #0.05
 
 # minibatch related
 batchsize=30
@@ -53,19 +53,23 @@ opt=adadelta
 epochs=15
 
 # rnnlm related
-lm_weight=1.0
+lm_weight=0.0 #1.0
 
 # decoding parameter
-beam_size=20
+beam_size=2
 penalty=0.0
-maxlenratio=0.0
-minlenratio=0.0
-ctc_weight=0.3
+maxlenratio=0.8
+minlenratio=0.3
+ctc_weight=0.0 #0.3
 recog_model=acc.best # set a model to be used for decoding: 'acc.best' or 'loss.best'
 
 # data
 wsj0=/export/corpora5/LDC/LDC93S6B
 wsj1=/export/corpora5/LDC/LDC94S13B
+
+# aug data
+wsjaug=/export/b07/arenduc1/e2e-speech/data/wsjchars/chars/wsjchars.aug.train
+use_aug=true
 
 # exp tag
 tag="" # tag for managing experiments.
@@ -102,7 +106,7 @@ if [ ${stage} -le 1 ]; then
     fbankdir=fbank
     # Generate the fbank features; by default 80-dimensional fbanks with pitch on each frame
     for x in train_si284 test_dev93 test_eval92; do
-        steps/make_fbank_pitch.sh --cmd "$train_cmd" --nj 10 data/${x} exp/make_fbank/${x} ${fbankdir}
+        steps/make_fbank_pitch.sh --cmd "$train_cmd" --nj 100 data/${x} exp/make_fbank/${x} ${fbankdir}
     done
 
     # compute global CMVN
@@ -149,8 +153,14 @@ if [ ${stage} -le 2 ]; then
          data/${train_set} ${dict} > ${feat_tr_dir}/data.json
     data2json.sh --feat ${feat_dt_dir}/feats.scp --nlsyms ${nlsyms} \
          data/${train_dev} ${dict} > ${feat_dt_dir}/data.json
-fi
+    
+    if [ ! -z "${wsjaug}" ] && [ ${use_aug} == true ]; then
+      echo "updating ${feat_dt_dir}/data.json with augmenting data"
+      add2json.py -a ${wsjaug} -j ${feat_tr_dir}/data.json
+    fi
 
+fi
+exit 0
 # It takes a few days. If you just want to end-to-end ASR without LM,
 # you can skip this and remove --rnnlm option in the recognition (stage 5)
 lmexpdir=exp/train_rnnlm_2layer_bs2048
