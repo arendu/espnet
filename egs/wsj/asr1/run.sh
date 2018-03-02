@@ -9,7 +9,7 @@
 # general configuration
 backend=pytorch
 stage=0        # start from 0 if you need to start from data preparation
-gpu=0         # use 0 when using GPU on slurm/grid engine, otherwise -1
+gpu=-1 #0         # use 0 when using GPU on slurm/grid engine, otherwise -1
 debugmode=1
 dumpdir=dump   # directory to dump full features
 N=0            # number of minibatches to be used (mainly for debugging). "0" uses all minibatches.
@@ -32,7 +32,7 @@ ctctype=chainer
 dlayers=1
 dunits=256
 # attention related
-atype=location
+atype=dot #location
 aconv_chans=10
 aconv_filts=100
 
@@ -68,7 +68,7 @@ wsj0=/export/corpora5/LDC/LDC93S6B
 wsj1=/export/corpora5/LDC/LDC94S13B
 
 # aug data
-wsjaug=/export/b07/arenduc1/e2e-speech/data/wsjchars/chars/wsjchars.aug.train
+wsjaug=/export/a08/mwiesner/MULTIWAY_E2E_SPEECH/newscrawl2007/aug_for_espnet/aug.small
 use_aug=true
 
 # exp tag
@@ -115,17 +115,17 @@ if [ ${stage} -le 1 ]; then
     # dump features for training
     if [[ $(hostname -f) == *.clsp.jhu.edu ]] && [ ! -d ${feat_tr_dir}/storage ]; then
     utils/create_split_dir.pl \
-        /export/b{10,11,12,13}/${USER}/espnet-data/egs/voxforge/asr1/dump/${train_set}/delta${do_delta}/storage \
+        /export/b{19,18,17,16}/${USER}/espnet-data/egs/voxforge/asr1/dump/${train_set}/delta${do_delta}/storage \
         ${feat_tr_dir}/storage
     fi
     if [[ $(hostname -f) == *.clsp.jhu.edu ]] && [ ! -d ${feat_dt_dir}/storage ]; then
     utils/create_split_dir.pl \
-        /export/b{10,11,12,13}/${USER}/espnet-data/egs/voxforge/asr1/dump/${train_dev}/delta${do_delta}/storage \
+        /export/b{19,18,17,16}/${USER}/espnet-data/egs/voxforge/asr1/dump/${train_dev}/delta${do_delta}/storage \
         ${feat_dt_dir}/storage
     fi
     dump.sh --cmd "$train_cmd" --nj 32 --do_delta $do_delta \
         data/${train_set}/feats.scp data/${train_set}/cmvn.ark exp/dump_feats/train ${feat_tr_dir}
-    dump.sh --cmd "$train_cmd" --nj 4 --do_delta $do_delta \
+    dump.sh --cmd "$train_cmd" --nj 32 --do_delta $do_delta \
         data/${train_dev}/feats.scp data/${train_set}/cmvn.ark exp/dump_feats/dev ${feat_dt_dir}
 fi
 
@@ -153,10 +153,9 @@ if [ ${stage} -le 2 ]; then
          data/${train_set} ${dict} > ${feat_tr_dir}/data.json
     data2json.sh --feat ${feat_dt_dir}/feats.scp --nlsyms ${nlsyms} \
          data/${train_dev} ${dict} > ${feat_dt_dir}/data.json
-    
     if [ ! -z "${wsjaug}" ] && [ ${use_aug} == true ]; then
       echo "updating ${feat_dt_dir}/data.json with augmenting data"
-      add2json.py -a ${wsjaug} -j ${feat_tr_dir}/data.json
+      add2json.py -a ${wsjaug} -d ${dict} -j ${feat_tr_dir}/data.json
     fi
 
 fi
@@ -237,7 +236,7 @@ if [ ${stage} -le 4 ]; then
         --opt ${opt} \
         --epochs ${epochs}
 fi
-
+exit 0
 if [ ${stage} -le 5 ]; then
     echo "stage 5: Decoding"
     nj=32

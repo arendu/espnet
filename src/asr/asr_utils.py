@@ -5,11 +5,54 @@
 
 
 import logging
-
 # chainer related
 import chainer
 from chainer import training
+import numpy as np
 
+# * -------------------- agumenting data prep -------------------- *
+def make_augment_batchset(data, batch_size, max_length_in, max_length_out, num_batches=0):
+    # sort it by input lengths (long to short)
+    #data has keys ifilename, ofilename, sentences
+    # sentences has keys id, and values ilen, olen, ioffset, ooffset
+    #ifilename = data['ifilename']
+    #ofilename = data['ofilename']
+    #idict = data['idict']
+    #odict = data['odict']
+    meta = {'ifilename': data['ifilename'], 'ofilename' : data['ofilename'], 'idict' : data['idict'], 'odict': data['odict']}
+    sentences = data['sentences']
+    sorted_data = sorted(sentences.items(), key=lambda data: int(
+        data[1]['ilen']), reverse=True)
+    logging.info('# augmenting data: ' + str(len(sorted_data)))
+    # change batchsize depending on the input and output length
+    minibatches = []
+    start = 0
+    while True:
+        b = max(1, int(batch_size))
+        end = start + b #(start + b) if (start + b < len(sorted_data)) else len(sorted_data)
+        minibatches.append(sorted_data[start:end])
+        if end >= len(sorted_data):
+            break
+        start = end
+    if num_batches > 0:
+        minibatches = minibatches[:num_batches]
+    logging.info('# augmenting data minibatches: ' + str(len(minibatches)))
+
+    return minibatches, meta
+
+
+def converter_augment(batch, idict, odict, ifile, ofile):
+    print('converter_augment')
+    for b_idx, b_obj in batch:
+        ifile.seek(b_obj['ioffset'])
+        ofile.seek(b_obj['ooffset'])
+        iline = ifile.readline()
+        oline = ofile.readline()
+        iline = np.array([idict[i] for i in iline.strip().split()], dtype=np.int64)
+        oline = ' '.join([str(odict[i]) for i in oline.strip().split()])
+        b_obj['feat'] = iline
+        b_obj['tokenid'] = oline
+    return batch
 
 # * -------------------- training iterator related -------------------- *
 def make_batchset(data, batch_size, max_length_in, max_length_out, num_batches=0):
@@ -43,6 +86,7 @@ def make_batchset(data, batch_size, max_length_in, max_length_out, num_batches=0
 # TODO(watanabe) perform mean and variance normalization during the python program
 # and remove the data dump process in run.sh
 def converter_kaldi(batch, reader):
+    print('converter_kaldi')
     for data in batch:
         feat = reader[data[0].encode('ascii', 'ignore')]
         data[1]['feat'] = feat

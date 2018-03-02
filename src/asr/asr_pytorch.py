@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import pickle
+import pdb
 
 # chainer related
 import chainer
@@ -22,9 +23,9 @@ import torch
 # spnet related
 from asr_utils import adadelta_eps_decay
 from asr_utils import CompareValueTrigger
-from asr_utils import converter_kaldi
+from asr_utils import converter_kaldi, converter_augment
 from asr_utils import delete_feat
-from asr_utils import make_batchset
+from asr_utils import make_batchset, make_augment_batchset
 from asr_utils import restore_snapshot
 from e2e_asr_attctc_th import E2E
 from e2e_asr_attctc_th import Loss
@@ -78,7 +79,6 @@ class PytorchSeqEvaluaterKaldi(extensions.Evaluator):
 
         return summary.compute_mean()
 
-
 class PytorchSeqUpdaterKaldi(training.StandardUpdater):
     '''Custom updater with Kaldi reader for pytorch'''
 
@@ -98,7 +98,6 @@ class PytorchSeqUpdaterKaldi(training.StandardUpdater):
 
         # Get the next batch ( a list of json files)
         batch = train_iter.__next__()
-
         # read scp files
         # x: original json with loaded features
         #    will be converted to chainer variable later
@@ -107,6 +106,55 @@ class PytorchSeqUpdaterKaldi(training.StandardUpdater):
 
         # Compute the loss at this time step and accumulate it
         loss = self.model(x)
+        optimizer.zero_grad()  # Clear the parameter gradients
+        loss.backward()  # Backprop
+        loss.detach()  # Truncate the graph
+        # compute the gradient norm to check if it is normal or not
+        grad_norm = torch.nn.utils.clip_grad_norm(
+            self.model.parameters(), self.grad_clip_threshold)
+        logging.info('grad norm={}'.format(grad_norm))
+        if math.isnan(grad_norm):
+            logging.warning('grad norm is nan. Do not update model.')
+        else:
+            optimizer.step()
+        delete_feat(x)
+
+
+class PytorchSeqUpdaterKaldiWithAugment(PytorchSeqUpdaterKaldi):
+    '''Custom updated for kaldi reader with augment data support'''
+    def __init__(self, model, grad_clip_threshold, train_iter, train_augment_iter, augment_metadata, optimizer, reader, device):
+        super(PytorchSeqUpdaterKaldiWithAugment, self).__init__(model, grad_clip_threshold, train_iter, optimizer, reader, device=None)
+        self.augment_metadata = augment_metadata
+        self.train_augment_iter = train_augment_iter
+        self.a2a_ratio = 1 #int(self.augment_metadata['a2a_ratio'])
+        self.done_augment = 0
+        self.idict = self.augment_metadata['idict']
+        self.odict = self.augment_metadata['odict']
+        self.ifile = open(self.augment_metadata['ifilename'], 'r')
+        self.ofile = open(self.augment_metadata['ofilename'], 'r')
+
+
+    def update_core(self,):
+        train_iter = self.get_iterator('main')
+        optimizer = self.get_optimizer('main')
+        
+        if (self.done_augment >= self.a2a_ratio): #TODO: need a better way to switch between audio and augment
+            #main batch
+            print('PytorchSeqUpdaterKaldiWithAugment main')
+            batch = train_iter.__next__()
+            x = converter_kaldi(batch[0], self.reader)
+            self.done_augment = 0
+            is_aug = False
+        else:
+            print('PytorchSeqUpdaterKaldiWithAugment augment')
+            #augment batch
+            batch = self.train_augment_iter.__next__()
+            x = converter_augment(batch[0], self.idict, self.odict, self.ifile, self.ofile) 
+            self.done_augment += 1
+            is_aug = True
+
+        # Compute the loss at this time step and accumulate it
+        loss = self.model(x, is_aug = is_aug)
         optimizer.zero_grad()  # Clear the parameter gradients
         loss.backward()  # Backprop
         loss.detach()  # Truncate the graph
@@ -152,9 +200,18 @@ def train(args):
     odim = int(valid_json[utts[0]]['odim'])
     logging.info('#input dims : ' + str(idim))
     logging.info('#output dims: ' + str(odim))
+    with open(args.train_label, 'rb') as f:
+        data_json = json.load(f)
+        if 'aug' in data_json:
+            augment_json = data_json['aug']
+            augment_idim = len(augment_json['idict'])
+        else:
+            augment_json = None
+            augment_idim = 0
+
 
     # specify model architecture
-    e2e = E2E(idim, odim, args)
+    e2e = E2E(idim, odim, args, augment_idim = augment_idim)
     model = Loss(e2e, args.mtlalpha)
 
     # write model config
@@ -188,7 +245,12 @@ def train(args):
 
     # read json data
     with open(args.train_label, 'rb') as f:
-        train_json = json.load(f)['utts']
+        data_json = json.load(f)
+        train_json = data_json['utts']
+        if 'aug' in data_json:
+            augment_json = data_json['aug']
+        else:
+            augment_json = None
     with open(args.valid_label, 'rb') as f:
         valid_json = json.load(f)['utts']
 
@@ -197,21 +259,38 @@ def train(args):
                           args.maxlen_in, args.maxlen_out, args.minibatches)
     valid = make_batchset(valid_json, args.batch_size,
                           args.maxlen_in, args.maxlen_out, args.minibatches)
-    # hack to make batchsze argument as 1
-    # actual bathsize is included in a list
-    train_iter = chainer.iterators.SerialIterator(train, 1)
+    # hack to make batch size argument as 1
+    # actual batch size is included in a list
+    train_iter = chainer.iterators.SerialIterator(train, 1) #TODO: why is batch size 1?
     valid_iter = chainer.iterators.SerialIterator(
         valid, 1, repeat=False, shuffle=False)
 
     # prepare Kaldi reader
     train_reader = lazy_io.read_dict_scp(args.train_feat)
     valid_reader = lazy_io.read_dict_scp(args.valid_feat)
+    if augment_json is not None:
+        train_augment, meta = make_augment_batchset(augment_json, args.batch_size,
+                          args.maxlen_in, args.maxlen_out, args.minibatches)
+        train_augment_iter = chainer.iterators.SerialIterator(train_augment, 1, 
+                repeat=True, shuffle=True)
+        updater = PytorchSeqUpdaterKaldiWithAugment(model, 
+                    args.grad_clip, 
+                    train_iter, 
+                    train_augment_iter, 
+                    meta, 
+                    optimizer, 
+                    train_reader, 
+                    gpu_id)
+        trainer = training.Trainer(updater, 
+                (args.epochs, 'epoch'), 
+                out=args.outdir)
 
+    else:
     # Set up a trainer
-    updater = PytorchSeqUpdaterKaldi(
-        model, args.grad_clip, train_iter, optimizer, train_reader, gpu_id)
-    trainer = training.Trainer(
-        updater, (args.epochs, 'epoch'), out=args.outdir)
+        updater = PytorchSeqUpdaterKaldi(
+            model, args.grad_clip, train_iter, optimizer, train_reader, gpu_id)
+        trainer = training.Trainer(
+            updater, (args.epochs, 'epoch'), out=args.outdir)
 
     # Resume from a snapshot
     if args.resume:
@@ -284,6 +363,8 @@ def train(args):
 
     # Run the training
     trainer.run()
+    updater.ifile.close()
+    updater.ofile.close()
 
 
 def recog(args):

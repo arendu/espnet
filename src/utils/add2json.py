@@ -8,6 +8,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-a", "--aug", action="store", required=True,
                         help="Augmenting data")
+    parser.add_argument("-d", "--dict", action="store", required=True,
+                        help="Augmenting data dictionary prefix")
     parser.add_argument("-j", "--json", action="store", required=True,
                         help="Other json with which to merge (overwrite)")
 
@@ -15,12 +17,16 @@ def main():
 
     with open(args.json, "r") as f:
         data_json = json.load(f)
-    
+
+    odict_lines = [(l.strip().split()) for l in open(args.dict, 'r').readlines()]
+    idict = {'<pad>': 0 } 
+    odict = {k: int(v) for k,v in odict_lines}
     ofilename = args.aug + ".tgt"
     ifilename = args.aug + ".src"
     data_json['aug'] = {}        
     data_json['aug']['ifilename'] = ifilename
     data_json['aug']['ofilename'] = ofilename
+    data_json['aug']['odict'] = odict
     data_json['aug']['sentences'] = {}
 
     with open(ofilename, "r") as fo:
@@ -32,9 +38,12 @@ def main():
             oline = fo.readline()
             while(iline and oline):
                 print("\rLine: ", line_num, end="")
+                iline_toks = iline.strip().split()
+                for i_tok in iline_toks:
+                    idict[i_tok] = idict.get(i_tok, len(idict))
                 olen = len(oline.strip().split())
-                ilen = len(iline.strip().split())
-                data_json['aug']['sentences'][str(line_num)] = {
+                ilen = len(iline_toks)
+                data_json['aug']['sentences'][line_num] = {
                     'ilen': ilen,
                     'olen': olen,
                     'ioffset': ioffset,
@@ -46,7 +55,7 @@ def main():
                 oline = fo.readline()
                 line_num += 1
     print()
-
+    data_json['aug']['idict'] = idict #input side dictionary with <pad> symbol
     with open(args.json, "w") as f:
         json.dump(data_json, f, indent=4)
 
