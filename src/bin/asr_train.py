@@ -36,6 +36,8 @@ def main():
     parser.add_argument('--verbose', '-V', default=0, type=int,
                         help='Verbose option')
     # task related
+    parser.add_argument('--augment-ratio', type=int, required=True,
+                        help='Augment data ratio to be used')
     parser.add_argument('--train-feat', type=str, required=True,
                         help='Filename of train feature data (Kaldi scp)')
     parser.add_argument('--valid-feat', type=str, required=True,
@@ -64,7 +66,7 @@ def main():
                         help='Type of CTC implementation to calculate loss.')
     # attention
     parser.add_argument('--atype', default='dot', type=str,
-                        choices=['dot', 'location', 'noatt'],
+                        choices=['dot', 'location', 'noatt', 'cdf'],
                         help='Type of attention architecture')
     parser.add_argument('--adim', default=320, type=int,
                         help='Number of attention transformation dimensions')

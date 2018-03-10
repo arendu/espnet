@@ -122,11 +122,11 @@ class PytorchSeqUpdaterKaldi(training.StandardUpdater):
 
 class PytorchSeqUpdaterKaldiWithAugment(PytorchSeqUpdaterKaldi):
     '''Custom updated for kaldi reader with augment data support'''
-    def __init__(self, model, grad_clip_threshold, train_iter, train_augment_iter, augment_metadata, optimizer, reader, device):
+    def __init__(self, model, grad_clip_threshold, train_iter, train_augment_iter, augment_metadata, augment_ratio, optimizer, reader, device):
         super(PytorchSeqUpdaterKaldiWithAugment, self).__init__(model, grad_clip_threshold, train_iter, optimizer, reader, device=None)
         self.augment_metadata = augment_metadata
         self.train_augment_iter = train_augment_iter
-        self.a2a_ratio = 1 #int(self.augment_metadata['a2a_ratio'])
+        self.a2a_ratio = augment_ratio #int(self.augment_metadata['a2a_ratio'])
         self.done_augment = 0
         self.idict = self.augment_metadata['idict']
         self.odict = self.augment_metadata['odict']
@@ -139,15 +139,13 @@ class PytorchSeqUpdaterKaldiWithAugment(PytorchSeqUpdaterKaldi):
         optimizer = self.get_optimizer('main')
         
         if (self.done_augment >= self.a2a_ratio): #TODO: need a better way to switch between audio and augment
-            #main batch
-            print('PytorchSeqUpdaterKaldiWithAugment main')
+            #print('main batch')
             batch = train_iter.__next__()
             x = converter_kaldi(batch[0], self.reader)
             self.done_augment = 0
             is_aug = False
         else:
-            print('PytorchSeqUpdaterKaldiWithAugment augment')
-            #augment batch
+            #print('augment batch')
             batch = self.train_augment_iter.__next__()
             x = converter_augment(batch[0], self.idict, self.odict, self.ifile, self.ofile) 
             self.done_augment += 1
@@ -273,11 +271,13 @@ def train(args):
                           args.maxlen_in, args.maxlen_out, args.minibatches)
         train_augment_iter = chainer.iterators.SerialIterator(train_augment, 1, 
                 repeat=True, shuffle=True)
+        assert args.augment_ratio > 0
         updater = PytorchSeqUpdaterKaldiWithAugment(model, 
                     args.grad_clip, 
                     train_iter, 
                     train_augment_iter, 
                     meta, 
+                    args.augment_ratio,
                     optimizer, 
                     train_reader, 
                     gpu_id)

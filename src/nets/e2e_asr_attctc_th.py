@@ -25,6 +25,8 @@ from ctc_prefix_score import CTCPrefixScore
 from e2e_asr_common import end_detect
 from e2e_asr_common import label_smoothing_dist
 
+import pdb
+
 CTC_LOSS_THRESHOLD = 10000
 CTC_SCORING_RATIO = 1.5
 MAX_DECODER_OUTPUT = 5
@@ -201,6 +203,9 @@ class E2E(torch.nn.Module):
         elif args.atype == 'location':
             self.att = AttLoc(args.eprojs, args.dunits,
                               args.adim, args.aconv_chans, args.aconv_filts)
+        elif args.atype == 'cdf':
+            self.att = AttCDF(args.eprojs, args.dunits, 
+                              args.adim, args.aconv_chans)
         elif args.atype == 'noatt':
             self.att = NoAtt()
         else:
@@ -220,6 +225,7 @@ class E2E(torch.nn.Module):
         #         for name, p in m.named_parameters():
         #             if "bias_ih" in name:
         #                 set_forget_bias_to_one(p)
+        print('E2E model created', self)
 
     def init_like_chainer(self):
         """Initialize weight like chainer
@@ -576,6 +582,105 @@ class AttLoc(torch.nn.Module):
 
         return c, w
 
+# location based attention
+class AttCDF(torch.nn.Module):
+    def __init__(self, eprojs, dunits, att_dim, aconv_chans):
+        super(AttCDF, self).__init__()
+        self.mlp_enc = torch.nn.Linear(eprojs, att_dim)
+        self.mlp_dec = torch.nn.Linear(dunits, att_dim, bias=False)
+        self.mlp_att = torch.nn.Linear(aconv_chans, att_dim, bias=False)
+        self.gvec = torch.nn.Linear(att_dim, 1)
+
+        self.dunits = dunits
+        self.eprojs = eprojs
+        self.att_dim = att_dim
+        self.h_length = None
+        self.enc_h = None
+        self.pre_compute_enc_h = None
+        self.aconv_chans = aconv_chans
+        self.kl_cost = 0.0
+        self.dot_cost = 0.0
+        self.coef = (1, 0)
+    
+    def cdf_loss(self,):
+        return (self.coef[0] * self.kl_cost) + (self.coef[1] * self.dot_cost)
+
+    def reset(self):
+        '''reset states
+
+        :return:
+        '''
+        self.h_length = None
+        self.enc_h = None
+        self.pre_compute_enc_h = None
+
+    def forward(self, enc_hs_pad, enc_hs_len, dec_z, att_prev, scaling=2.0):
+        '''AttLoc forward
+
+        :param Variable enc_hs:
+        :param Variable dec_z:
+        :param Variable att_prev:
+        :param float scaling:
+        :return:
+        '''
+        batch = len(enc_hs_pad)
+        # pre-compute all h outside the decoder loop
+        if self.pre_compute_enc_h is None:
+            self.enc_h = enc_hs_pad  # utt x frame x hdim
+            self.h_length = self.enc_h.size(1)
+            # utt x frame x att_dim
+            self.pre_compute_enc_h = linear_tensor(self.mlp_enc, self.enc_h)
+
+        if dec_z is None:
+            dec_z = Variable(enc_hs_pad.data.new(batch, self.dunits).zero_())
+        else:
+            dec_z = dec_z.view(batch, self.dunits)
+
+        # initialize attention weight with uniform dist.
+        if att_prev is None:
+            att_prev = [Variable(enc_hs_pad.data.new(
+                l).zero_() + (1.0 / l)) for l in enc_hs_len]
+            # if no bias, 0 0-pad goes 0
+            att_prev = pad_list(att_prev, 0)
+
+        # att_prev: utt x frame -> utt x 1 x 1 x frame -> utt x att_conv_chans x 1 x frame
+        #att_conv = self.loc_conv(att_prev.view(batch, 1, 1, self.h_length))
+        # att_conv: utt x att_conv_chans x 1 x frame -> utt x frame x att_conv_chans
+        #att_conv = att_conv.squeeze(2).transpose(1, 2)
+        # att_conv: utt x frame x att_conv_chans -> utt x frame x att_dim
+        #att_conv = linear_tensor(self.mlp_att, att_conv)
+
+        # dec_z_tiled: utt x frame x att_dim
+        dec_z_tiled = self.mlp_dec(dec_z).view(batch, 1, self.att_dim)
+
+        # dot with gvec
+        # utt x frame x att_dim -> utt x frame
+        # NOTE consider zero padding when compute w.
+        e = linear_tensor(self.gvec, torch.tanh(self.pre_compute_enc_h + dec_z_tiled)).squeeze(2)
+        for i in  range(e.size(0)):
+            e[i, enc_hs_len[i]:] = -float('inf')
+        w = F.softmax(scaling * e, dim=1)
+        w_c = torch.cumsum(w, dim=1)
+        w_c_prev = torch.cumsum(att_prev, dim = 1)
+        kl = 0.
+        for i in range(w_c.size(0)):
+            w_c[i, enc_hs_len[i]:] = 0
+            w_c_prev[i, enc_hs_len[i]:] = 0
+            lp_wc = torch.nn.functional.log_softmax(w_c[i, :enc_hs_len[i]])
+            lp_wc_prev = torch.nn.functional.log_softmax(w_c_prev[i, :enc_hs_len[i]])
+            kl += torch.nn.functional.kl_div(lp_wc, lp_wc_prev, size_average = False)
+        self.kl_cost = kl / w_c.size(0)
+        #w_c (batch_size x seq_len)
+        #w_c_prev (batch_size x seq_len)
+        dot = torch.dot(w_c,  torch.transpose(w_c_prev, 0, 1)) #(batch_size x batch_size)
+        self.dot_cost = torch.diagonal(dot).sum()
+        # weighted sum over flames
+        # utt x hdim
+        # NOTE use bmm instead of sum(*)
+        c = torch.sum(self.enc_h * w.view(batch, self.h_length, 1), dim=1)
+
+        return c, w
+
 
 class NoAtt(torch.nn.Module):
     def __init__(self):
@@ -703,8 +808,13 @@ class Decoder(torch.nn.Module):
         eys = self.embed(pad_ys_in)  # utt x olen x zdim
 
         # loop for an output sequence
+        cdf_loss = 0
         for i in six.moves.range(olength):
-            att_c, att_w = self.att(hpad, hlen, z_list[0], att_w)
+            if hasattr(self.att, 'cdf_loss'):
+                att_c, att_w = self.att(hpad, hlen, z_list[0], att_w)
+                cdf_loss += self.att.cdf_loss()
+            else:
+                att_c, att_w = self.att(hpad, hlen, z_list[0], att_w)
             ey = torch.cat((eys[:, i, :], att_c), dim=1)  # utt x (zdim + hdim)
             z_list[0], c_list[0] = self.decoder[0](ey, (z_list[0], c_list[0]))
             for l in six.moves.range(1, self.dlayers):
@@ -746,6 +856,9 @@ class Decoder(torch.nn.Module):
             loss_reg = - torch.sum((F.log_softmax(y_all, dim=1) *
                                     self.vlabeldist).view(-1), dim=0) / len(ys_in)
             self.loss = (1. - self.lsm_weight) * self.loss + self.lsm_weight * loss_reg
+
+        if cdf_loss:
+            self.loss = (cdf_coef * self.loss) + ((1.0 - cdf_coef) * cdf_loss)
 
         return self.loss, acc, att_weight_all
 
@@ -986,7 +1099,6 @@ class Encoder(torch.nn.Module):
             logging.error(
                 "Error: need to specify an appropriate encoder archtecture")
             sys.exit()
-        print('Base Encoder created', self)
         self.etype = etype
 
     def forward(self, xs, ilens):

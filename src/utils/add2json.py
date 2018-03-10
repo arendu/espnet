@@ -54,7 +54,7 @@ def main():
                 iline = fi.readline()
                 oline = fo.readline()
                 line_num += 1
-    print()
+    print('using ' + str(line_num) + ' lines of augmenting data')
     data_json['aug']['idict'] = idict #input side dictionary with <pad> symbol
     with open(args.json, "w") as f:
         json.dump(data_json, f, indent=4)
