@@ -363,7 +363,8 @@ def train(args):
 
     # Run the training
     trainer.run()
-    updater.ifile.close()
+    if hasattr(updater, 'ifile'):
+        updater.ifile.close()
     updater.ofile.close()
 
 
