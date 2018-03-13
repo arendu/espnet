@@ -42,14 +42,15 @@ def make_augment_batchset(data, batch_size, max_length_in, max_length_out, num_b
 
 
 def converter_augment(batch, idict, odict, ifile, ofile):
-    print('converter_augment')
     for b_idx, b_obj in batch:
         ifile.seek(b_obj['ioffset'])
         ofile.seek(b_obj['ooffset'])
         iline = ifile.readline()
         oline = ofile.readline()
         iline = np.array([idict[i] for i in iline.strip().split()], dtype=np.int64)
-        oline = ' '.join([str(odict[i]) for i in oline.strip().split()])
+        filter_oline = [i for i in oline.strip().split() if i in odict] #so that we can use the same aug files from OpenNMT
+        oline = ' '.join([str(odict[i]) for i in filter_oline])
+        assert len(oline.strip()) > 0
         b_obj['feat'] = iline
         b_obj['tokenid'] = oline
     return batch
@@ -86,7 +87,6 @@ def make_batchset(data, batch_size, max_length_in, max_length_out, num_batches=0
 # TODO(watanabe) perform mean and variance normalization during the python program
 # and remove the data dump process in run.sh
 def converter_kaldi(batch, reader):
-    print('converter_kaldi')
     for data in batch:
         feat = reader[data[0].encode('ascii', 'ignore')]
         data[1]['feat'] = feat

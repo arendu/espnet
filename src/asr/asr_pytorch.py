@@ -363,9 +363,10 @@ def train(args):
 
     # Run the training
     trainer.run()
-    if hasattr(updater, 'ifile'):
+    
+    if isinstance(updater, PytorchSeqUpdaterKaldiWithAugment):
         updater.ifile.close()
-    updater.ofile.close()
+        updater.ofile.close()
 
 
 def recog(args):

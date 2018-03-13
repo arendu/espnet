@@ -36,7 +36,7 @@ def main():
     parser.add_argument('--verbose', '-V', default=0, type=int,
                         help='Verbose option')
     # task related
-    parser.add_argument('--augment-ratio', type=int, required=True,
+    parser.add_argument('--augment-ratio', type=int, required=False, default=0,
                         help='Augment data ratio to be used')
     parser.add_argument('--train-feat', type=str, required=True,
                         help='Filename of train feature data (Kaldi scp)')
