@@ -384,7 +384,15 @@ def recog(args):
 
     # specify model architecture
     logging.info('reading model parameters from' + args.model)
-    e2e = E2E(idim, odim, train_args)
+    with open(train_args.train_label, 'rb') as f:
+        data_json = json.load(f)
+        if 'aug' in data_json:
+            augment_json = data_json['aug']
+            augment_idim = len(augment_json['idict'])
+        else:
+            augment_json = None
+            augment_idim = 0
+    e2e = E2E(idim, odim, train_args, augment_idim = augment_idim)
     model = Loss(e2e, train_args.mtlalpha)
 
     def cpu_loader(storage, location):
