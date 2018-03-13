@@ -137,8 +137,6 @@ def aug_pad_list(xs, pad_idx):
     return padded
 
 
-
-
 def pad_list(xs, pad_value=float("nan")):
     assert isinstance(xs[0], Variable)
     n_batch = len(xs)
@@ -192,6 +190,8 @@ class E2E(torch.nn.Module):
         # augment encoder
         if augment_idim > 0: 
             self.aug_enc = AugmentEncoder(augment_idim, args.etype, idim, 1, args.eunits, args.eprojs, [None, 1], args.dropout_rate)
+        else:
+            self.aug_enc = None
         # encoder
         self.enc = Encoder(args.etype, idim, args.elayers, args.eunits, args.eprojs,
                            self.subsample, args.dropout_rate)
