@@ -613,6 +613,8 @@ class AttCDF(torch.nn.Module):
         self.h_length = None
         self.enc_h = None
         self.pre_compute_enc_h = None
+        self.kl_cost = 0.0
+        self.dot_cost = 0.0
 
     def forward(self, enc_hs_pad, enc_hs_len, dec_z, att_prev, scaling=2.0):
         '''AttLoc forward
@@ -657,28 +659,49 @@ class AttCDF(torch.nn.Module):
         # utt x frame x att_dim -> utt x frame
         # NOTE consider zero padding when compute w.
         e = linear_tensor(self.gvec, torch.tanh(self.pre_compute_enc_h + dec_z_tiled)).squeeze(2)
-        for i in  range(e.size(0)):
-            e[i, enc_hs_len[i]:] = -float('inf')
+#        for i in  range(e.size(0)):
+#            if enc_hs_len[i] < e.size(1):
+#                e[i, enc_hs_len[i]:] = -float('inf')
         w = F.softmax(scaling * e, dim=1)
         w_c = torch.cumsum(w, dim=1)
         w_c_prev = torch.cumsum(att_prev, dim = 1)
         kl = 0.
         for i in range(w_c.size(0)):
-            w_c[i, enc_hs_len[i]:] = 0
-            w_c_prev[i, enc_hs_len[i]:] = 0
-            lp_wc = torch.nn.functional.log_softmax(w_c[i, :enc_hs_len[i]])
-            lp_wc_prev = torch.nn.functional.log_softmax(w_c_prev[i, :enc_hs_len[i]])
-            kl += torch.nn.functional.kl_div(lp_wc, lp_wc_prev, size_average = False)
-        self.kl_cost = kl / w_c.size(0)
+#            if enc_hs_len[i] < e.size(1):
+#                print ("they should be one: ", w_c[i, enc_hs_len[i]:], w_c_prev[i, enc_hs_len[i]:])
+#                w_c[i, enc_hs_len[i]:] = 0
+#                w_c_prev[i, enc_hs_len[i]:] = 0
+
+#            pdb.set_trace()
+#            lw_c = torch.log(w_c[i, :enc_hs_len[i]])
+#            lw_c_prev = torch.log(w_c_prev[i, :enc_hs_len[i]])
+
+#            lp_wc = torch.nn.functional.log_softmax(lw_c[i, :enc_hs_len[i]])
+#            lp_wc_prev = torch.nn.functional.log_softmax(lw_c_prev[i, :enc_hs_len[i]])
+#            lp_wc_prev = Variable(lp_wc_prev.data.clone(), requires_grad=False)
+
+#            lp_wc = torch.nn.functional.log_softmax(lw_c)
+#            lp_wc_prev = torch.nn.functional.softmax(lw_c_prev)
+#            lp_wc_prev = Variable(lp_wc_prev.data.clone(), requires_grad=False)
+
+#            kl += torch.nn.functional.kl_div(lp_wc, lp_wc_prev, size_average = False)
+#            w_c_prev = Variable(w_c_prev.data.clone(), requires_grad=False)
+#            kl += torch.nn.functional.mse_loss(w_c, w_c_prev, size_average=False)
+#            print w_c.shape
+            kl += torch.dot(w_c - w_c_prev, w_c - w_c_prev)
+#            pdb.set_trace()
+#            print (lp_wc, lp_wc_prev)
+        self.kl_cost = kl
         #w_c (batch_size x seq_len)
         #w_c_prev (batch_size x seq_len)
-        dot = torch.dot(w_c,  torch.transpose(w_c_prev, 0, 1)) #(batch_size x batch_size)
-        self.dot_cost = torch.diagonal(dot).sum()
+#        dot = torch.dot(w_c - w_c_prev, w_c - w_c_prev) #(batch_size x batch_size)
+#        self.dot_cost = dot
         # weighted sum over flames
         # utt x hdim
         # NOTE use bmm instead of sum(*)
         c = torch.sum(self.enc_h * w.view(batch, self.h_length, 1), dim=1)
 
+#        print (c.shape, w.shape)
         return c, w
 
 
@@ -808,13 +831,8 @@ class Decoder(torch.nn.Module):
         eys = self.embed(pad_ys_in)  # utt x olen x zdim
 
         # loop for an output sequence
-        cdf_loss = 0
         for i in six.moves.range(olength):
-            if hasattr(self.att, 'cdf_loss'):
-                att_c, att_w = self.att(hpad, hlen, z_list[0], att_w)
-                cdf_loss += self.att.cdf_loss()
-            else:
-                att_c, att_w = self.att(hpad, hlen, z_list[0], att_w)
+            att_c, att_w = self.att(hpad, hlen, z_list[0], att_w)
             ey = torch.cat((eys[:, i, :], att_c), dim=1)  # utt x (zdim + hdim)
             z_list[0], c_list[0] = self.decoder[0](ey, (z_list[0], c_list[0]))
             for l in six.moves.range(1, self.dlayers):
@@ -822,6 +840,10 @@ class Decoder(torch.nn.Module):
                     z_list[l - 1], (z_list[l], c_list[l]))
             z_all.append(z_list[-1])
             att_weight_all.append(att_w.data)  # for debugging
+
+        cdf_loss = 0
+        if isinstance(self.att, AttCDF): 
+            cdf_loss = self.att.cdf_loss()
 
         z_all = torch.stack(z_all, dim=1).view(batch * olength, self.dunits)
         # compute loss
@@ -857,8 +879,10 @@ class Decoder(torch.nn.Module):
                                     self.vlabeldist).view(-1), dim=0) / len(ys_in)
             self.loss = (1. - self.lsm_weight) * self.loss + self.lsm_weight * loss_reg
 
-        if cdf_loss:
-            self.loss = (cdf_coef * self.loss) + ((1.0 - cdf_coef) * cdf_loss)
+#        cdf_coef = 0.0
+        print ("The losses are ", self.loss, cdf_loss)
+#        if isinstance(self.att, AttCDF): 
+#            self.loss = (1 - cdf_coef) * self.loss + cdf_coef * cdf_loss
 
         return self.loss, acc, att_weight_all
 

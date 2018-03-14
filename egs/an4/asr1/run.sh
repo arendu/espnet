@@ -32,7 +32,7 @@ ctctype=chainer
 dlayers=1
 dunits=300
 # attention related
-atype=location
+atype=cdf
 aconv_chans=10
 aconv_filts=100
 
@@ -195,7 +195,7 @@ if [ ${stage} -le 3 ]; then
         --opt ${opt} \
         --epochs ${epochs}
 fi
-
+exit
 if [ ${stage} -le 4 ]; then
     echo "stage 4: Decoding"
     nj=8
